@@ -1,4 +1,4 @@
-# MuseChart
+# MuseChartWeaver
 
 将 MP3/WAV/FLAC/OGG 通过模型转换为可用的 MDM，同时输出可选的 `events.json` 和推理报告。
 
