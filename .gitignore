@@ -1,0 +1,26 @@
+# Local Python environment
+.venv/
+venv/
+
+# Python caches and test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Generated charts and reports
+output/
+*.log
+
+# Local models and manual test material
+checkpoints/*.pt
+test/
+对比/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini

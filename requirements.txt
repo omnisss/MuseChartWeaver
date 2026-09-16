@@ -1,0 +1,10 @@
+# Python 3.10+
+numpy>=1.26,<3
+scipy>=1.11,<2
+soundfile>=0.12,<1
+tqdm>=4.66,<5
+torch>=2.4,<3
+
+# ffmpeg/ffprobe 是系统程序，不由 pip 安装。
+# 如需 NVIDIA CUDA，请先在 .venv 中安装与显卡驱动匹配的 PyTorch；
+# 再安装本文件时，已经满足版本要求的 torch 不会被替换。
