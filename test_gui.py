@@ -6,7 +6,13 @@ from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
-from gui import GenerationOptions, build_generate_command, compose_output_path
+from gui import (
+    SCENE_OPTIONS,
+    GenerationOptions,
+    build_generate_command,
+    compose_output_path,
+    scene_id_from_choice,
+)
 from musechart_runtime.mdm import (
     _prepare_cover,
     find_default_cover,
@@ -15,6 +21,20 @@ from musechart_runtime.mdm import (
 
 
 class GuiCommandTests(unittest.TestCase):
+    def test_scene_choices_are_named_and_have_preview_images(self):
+        scene_ids = {option.scene_id for option in SCENE_OPTIONS}
+        self.assertEqual(
+            scene_ids,
+            {*(f"scene_{number:02d}" for number in range(1, 11)), "scene_12"},
+        )
+        self.assertNotIn("scene_11", scene_ids)
+        self.assertNotIn("scene_13", scene_ids)
+        for option in SCENE_OPTIONS:
+            self.assertEqual(scene_id_from_choice(option.label), option.scene_id)
+            self.assertTrue(option.background.is_file(), option.background)
+        with self.assertRaisesRegex(ValueError, "普通场景"):
+            scene_id_from_choice("scene_13")
+
     def test_output_name_appends_selected_map_number(self):
         directory = Path("output")
         self.assertEqual(

@@ -19,6 +19,8 @@ from musechart_runtime.mdm import find_default_cover, inspect_embedded_cover
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+GLOBAL_DIR = SCRIPT_DIR.parent / "global"
+ASSET_DIR = GLOBAL_DIR / "assets"
 AUDIO_TYPES = (
     ("音频文件", "*.mp3 *.wav *.ogg *.flac *.m4a *.aac *.opus"),
     ("所有文件", "*.*"),
@@ -27,6 +29,59 @@ IMAGE_TYPES = (
     ("图片文件", "*.png *.jpg *.jpeg *.webp *.bmp *.gif"),
     ("所有文件", "*.*"),
 )
+
+THEME = {
+    "background": "#160E26",
+    "surface_dark": "#27184D",
+    "surface_raised": "#3C286F",
+    "primary": "#FF1981",
+    "primary_deep": "#B1005F",
+    "cyan": "#00B7EE",
+    "cyan_deep": "#0075A9",
+    "violet": "#7941E0",
+    "violet_deep": "#5015A6",
+    "text": "#FFFFFF",
+    "text_muted": "#C9BFE0",
+    "success": "#6DFD64",
+}
+
+
+@dataclass(frozen=True)
+class SceneOption:
+    scene_id: str
+    label: str
+    title: str
+    description: str
+    background: Path
+
+
+SCENE_OPTIONS = tuple(
+    SceneOption(scene_id, f"{scene_id} · {title}", title, description,
+                ASSET_DIR / "backgrounds" / f"scene-{scene_id[-2:]}.png")
+    for scene_id, title, description in (
+        ("scene_01", "太空站 / Space Station", "工业感太空站与传送带背景"),
+        ("scene_02", "复古城市 / Retrocity", "霓虹车站与复古都市背景"),
+        ("scene_03", "城堡 / Castle", "暗色城堡与幽灵主题背景"),
+        ("scene_04", "雨夜 / Rainy Night", "雨夜街道与城市灯光背景"),
+        ("scene_05", "糖果世界 / Candyland", "明亮柔和的糖果世界背景"),
+        ("scene_06", "和风 / Oriental", "日式街景与夜色背景"),
+        ("scene_07", "Let's Groove / GC", "Groove Coaster 联动游乐园背景"),
+        ("scene_08", "幻想乡 / Gensokyo", "东方 Project 联动场景"),
+        ("scene_09", "Game Graveyard / DJMAX", "DJMAX 联动游戏墓地背景"),
+        ("scene_10", "Museland / Mirrorland", "初音未来与镜音联动舞台"),
+        ("scene_12", "翡翠寺 / Jade Temple", "中式寺庙与玉石主题背景"),
+    )
+)
+SCENE_BY_ID = {option.scene_id: option for option in SCENE_OPTIONS}
+SCENE_ID_BY_LABEL = {option.label: option.scene_id for option in SCENE_OPTIONS}
+
+
+def scene_id_from_choice(choice: str) -> str:
+    """Translate the human-readable UI choice into the MDM scene id."""
+    try:
+        return SCENE_ID_BY_LABEL[choice]
+    except KeyError as error:
+        raise ValueError("请选择列表中的普通场景") from error
 
 
 @dataclass(frozen=True)
@@ -132,8 +187,8 @@ class MuseChartApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("MuseChart v1.0 · 谱面生成器")
-        self.root.geometry("1180x780")
-        self.root.minsize(980, 680)
+        self.root.geometry("1260x850")
+        self.root.minsize(1080, 720)
         self.process: subprocess.Popen[str] | None = None
         self.cancel_requested = False
         self.messages: queue.Queue[tuple[str, object]] = queue.Queue()
@@ -143,11 +198,16 @@ class MuseChartApp:
         self.embedded_message = "选择音频后自动检测内嵌封面"
         self.fallback_cover = find_default_cover(SCRIPT_DIR / "image")
         self.name_is_automatic = True
+        self.ui_images: dict[str, tk.PhotoImage] = {}
+        self.scene_preview_image: tk.PhotoImage | None = None
 
         self._make_variables()
+        self._load_theme_assets()
         self._configure_style()
         self._build_layout()
         self._bind_events()
+        self._update_difficulty_icon()
+        self._update_scene_preview()
         self._refresh_cover_labels()
         self._poll_messages()
         self.root.protocol("WM_DELETE_WINDOW", self._close)
@@ -185,6 +245,9 @@ class MuseChartApp:
         self.bpm_mode_var = tk.StringVar(value="auto")
         self.bpm_var = tk.StringVar(value="120")
         self.scene_var = tk.StringVar(value="scene_01")
+        self.scene_choice_var = tk.StringVar(value=SCENE_BY_ID["scene_01"].label)
+        self.scene_name_var = tk.StringVar()
+        self.scene_description_var = tk.StringVar()
         self.speed_var = tk.StringVar(value="2")
         self.device_var = tk.StringVar(value="auto")
         self.cpu_threads_var = tk.StringVar(value=str(min(8, os.cpu_count() or 1)))
@@ -203,46 +266,157 @@ class MuseChartApp:
         self.cover_source_var = tk.StringVar()
         self.status_var = tk.StringVar(value="就绪")
 
+    def _load_png(self, key: str, path: Path, *, subsample: int = 1
+                  ) -> tk.PhotoImage | None:
+        if not path.is_file():
+            return None
+        try:
+            image = tk.PhotoImage(master=self.root, file=str(path))
+            if subsample > 1:
+                image = image.subsample(subsample, subsample)
+        except tk.TclError:
+            return None
+        self.ui_images[key] = image
+        return image
+
+    def _load_theme_assets(self) -> None:
+        icon = self._load_png("window_icon", ASSET_DIR / "chart" / "star.png")
+        if icon is not None:
+            self.root.iconphoto(True, icon)
+            self.ui_images["header_icon"] = icon.subsample(2, 2)
+        for difficulty, name in (("1", "easy"), ("2", "hard"),
+                                 ("3", "master")):
+            self._load_png(
+                f"difficulty_{difficulty}",
+                ASSET_DIR / "chart" / f"difficulty-{name}.png",
+                subsample=2,
+            )
+
     def _configure_style(self) -> None:
         style = ttk.Style(self.root)
         if "clam" in style.theme_names():
             style.theme_use("clam")
-        background = "#f4f6fb"
-        panel = "#ffffff"
-        accent = "#6c5ce7"
+        background = THEME["background"]
+        panel = THEME["surface_dark"]
+        raised = THEME["surface_raised"]
+        text = THEME["text"]
+        muted = THEME["text_muted"]
+        accent = THEME["primary"]
+        soft_edge = "#493568"
+        font = ("Microsoft YaHei UI", 9)
         self.root.configure(background=background)
+        style.configure(".", font=font, foreground=text)
         style.configure("App.TFrame", background=background)
         style.configure("Panel.TFrame", background=panel)
-        style.configure("Panel.TLabelframe", background=panel, padding=12)
+        style.configure("TLabel", background=panel, foreground=text)
+        style.configure("Panel.TLabelframe", background=panel, padding=12,
+                        bordercolor=soft_edge, lightcolor=soft_edge,
+                        darkcolor=soft_edge, borderwidth=1)
         style.configure("Panel.TLabelframe.Label", background=panel,
-                        foreground="#22263a", font=("Microsoft YaHei UI", 10, "bold"))
-        style.configure("TLabel", font=("Microsoft YaHei UI", 9))
-        style.configure("Title.TLabel", background=background, foreground="#22263a",
-                        font=("Microsoft YaHei UI", 18, "bold"))
-        style.configure("Subtitle.TLabel", background=background, foreground="#6b7280",
+                        foreground=text,
+                        font=("Microsoft YaHei UI", 10, "bold"))
+        style.configure("Title.TLabel", background=background, foreground=text,
+                        font=("Microsoft YaHei UI", 20, "bold"))
+        style.configure("Subtitle.TLabel", background=background, foreground=muted,
                         font=("Microsoft YaHei UI", 9))
-        style.configure("Status.TLabel", background=panel, foreground="#475569",
+        style.configure("HeaderIcon.TLabel", background=background)
+        style.configure("Status.TLabel", background=panel, foreground=muted,
                         font=("Microsoft YaHei UI", 9))
         style.configure("PanelHeading.TLabel", background=panel,
-                        foreground="#22263a",
+                        foreground=text,
                         font=("Microsoft YaHei UI", 12, "bold"))
+        style.configure("SceneName.TLabel", background=panel,
+                        foreground=THEME["cyan"],
+                        font=("Microsoft YaHei UI", 11, "bold"))
+        style.configure("SceneMeta.TLabel", background=panel, foreground=muted,
+                        font=("Microsoft YaHei UI", 9))
+
+        style.configure("TEntry", foreground=text, fieldbackground=raised,
+                        insertcolor=text, bordercolor=raised,
+                        lightcolor=raised, darkcolor=raised, padding=6)
+        style.map("TEntry", fieldbackground=[("disabled", panel)],
+                  foreground=[("disabled", muted)])
+        for widget in ("TCombobox", "TSpinbox"):
+            style.configure(widget, foreground=text, fieldbackground=raised,
+                            background=raised, arrowcolor=THEME["cyan"],
+                            padding=5, bordercolor=raised,
+                            lightcolor=raised, darkcolor=raised)
+            style.map(
+                widget,
+                fieldbackground=[("readonly", raised), ("disabled", panel)],
+                selectbackground=[("readonly", raised)],
+                selectforeground=[("readonly", text)],
+            )
+
+        style.configure("TButton", font=("Microsoft YaHei UI", 9, "bold"),
+                        foreground=text, background=THEME["violet_deep"],
+                        bordercolor=THEME["violet_deep"], padding=(12, 7))
+        style.map("TButton",
+                  background=[("active", THEME["violet"]),
+                              ("pressed", THEME["surface_raised"]),
+                              ("disabled", panel)],
+                  foreground=[("disabled", "#7F719D")])
+        style.configure("Secondary.TButton", foreground=text,
+                        background=THEME["cyan_deep"],
+                        bordercolor=THEME["cyan_deep"], padding=(12, 7))
+        style.map("Secondary.TButton",
+                  background=[("active", THEME["cyan"]),
+                              ("pressed", THEME["cyan_deep"]),
+                              ("disabled", panel)])
         style.configure("Accent.TButton", font=("Microsoft YaHei UI", 10, "bold"),
-                        foreground="white", background=accent, padding=(16, 8))
-        style.map("Accent.TButton", background=[("active", "#5847d6"),
-                                                ("disabled", "#aaa4d9")])
+                        foreground=text, background=accent,
+                        bordercolor=accent, padding=(18, 10))
+        style.map("Accent.TButton",
+                  background=[("active", THEME["primary_deep"]),
+                              ("pressed", THEME["primary_deep"]),
+                              ("disabled", "#6E2852")])
+        style.configure("TCheckbutton", background=panel, foreground=text,
+                        indicatorbackground=raised, indicatorforeground=text,
+                        padding=2)
+        style.map("TCheckbutton", background=[("active", panel)],
+                  indicatorbackground=[("selected", THEME["cyan"]),
+                                       ("active", THEME["violet"])])
+        style.configure("TRadiobutton", background=panel, foreground=text,
+                        indicatorbackground=raised, indicatorforeground=text)
+        style.map("TRadiobutton", background=[("active", panel)],
+                  indicatorbackground=[("selected", THEME["cyan"]),
+                                       ("active", THEME["violet"])])
         style.configure("Repair.TCheckbutton", background=panel,
+                        foreground=text,
                         font=("Microsoft YaHei UI", 10, "bold"))
+        style.configure("TNotebook", background=panel, borderwidth=0,
+                        tabmargins=(0, 0, 0, 0))
+        style.configure("TNotebook.Tab", background=background, foreground=muted,
+                        padding=(18, 10), borderwidth=0,
+                        font=("Microsoft YaHei UI", 9, "bold"))
+        style.map("TNotebook.Tab",
+                  background=[("selected", raised), ("active", panel)],
+                  foreground=[("selected", THEME["cyan"]), ("active", text)])
+        style.configure("TPanedwindow", background=background)
+        style.configure("Horizontal.TProgressbar", background=THEME["cyan"],
+                        troughcolor=raised, bordercolor=raised,
+                        lightcolor=THEME["cyan"],
+                        darkcolor=THEME["cyan"])
 
     def _build_layout(self) -> None:
         outer = ttk.Frame(self.root, style="App.TFrame", padding=16)
         outer.pack(fill="both", expand=True)
-        ttk.Label(outer, text="MuseChart v3.2 本机谱面生成器",
+        header = ttk.Frame(outer, style="App.TFrame")
+        header.pack(fill="x", pady=(0, 10))
+        header_icon = self.ui_images.get("header_icon")
+        if header_icon is not None:
+            ttk.Label(header, image=header_icon, style="HeaderIcon.TLabel").pack(
+                side="left", padx=(0, 10))
+        title_box = ttk.Frame(header, style="App.TFrame")
+        title_box.pack(side="left", fill="x", expand=True)
+        ttk.Label(title_box, text="MuseChartWeaver v1.0 谱面生成器",
                   style="Title.TLabel").pack(anchor="w")
         ttk.Label(
-            outer,
-            text="选择音频与模型，配置三类独立后处理，然后在本机直接生成 MDM。",
+            title_box,
+            text="选择音乐、场景和优化策略，直接生成可直接游玩的 MDM。",
             style="Subtitle.TLabel",
-        ).pack(anchor="w", pady=(2, 12))
+        ).pack(anchor="w", pady=(2, 0))
+        ttk.Frame(outer, style="App.TFrame").pack(fill="x", pady=(0, 4))
 
         pane = ttk.Panedwindow(outer, orient="horizontal")
         pane.pack(fill="both", expand=True)
@@ -271,7 +445,8 @@ class MuseChartApp:
         entry = ttk.Entry(parent, textvariable=variable)
         entry.grid(row=row, column=1, sticky="ew", padx=(10, 8), pady=7)
         if browse is not None:
-            ttk.Button(parent, text="选择…", command=browse).grid(
+            ttk.Button(parent, text="选择…", command=browse,
+                       style="Secondary.TButton").grid(
                 row=row, column=2, sticky="ew", pady=7)
         if clear is not None:
             ttk.Button(parent, text="清除", command=clear).grid(
@@ -325,6 +500,9 @@ class MuseChartApp:
         ttk.Combobox(tab, textvariable=self.difficulty_var,
                      values=("1", "2", "3"), state="readonly",
                      width=8).grid(row=0, column=1, sticky="w", padx=(10, 0), pady=7)
+        self.difficulty_icon_label = ttk.Label(tab)
+        self.difficulty_icon_label.grid(
+            row=0, column=2, sticky="w", padx=(12, 0), pady=2)
         ttk.Label(tab, text="显示等级").grid(row=1, column=0, sticky="w", pady=7)
         ttk.Entry(tab, textvariable=self.play_level_var, width=12).grid(
             row=1, column=1, sticky="w", padx=(10, 0), pady=7)
@@ -359,9 +537,37 @@ class MuseChartApp:
                         variable=self.bpm_mode_var,
                         command=self._toggle_bpm).grid(row=0, column=3, sticky="w", padx=(16, 0))
 
-        ttk.Label(tab, text="场景").grid(row=5, column=0, sticky="w", pady=7)
-        ttk.Entry(tab, textvariable=self.scene_var).grid(
-            row=5, column=1, sticky="ew", padx=(10, 0), pady=7)
+        scene_box = ttk.LabelFrame(
+            tab, text="场景选择与预览", style="Panel.TLabelframe")
+        scene_box.grid(
+            row=5, column=0, columnspan=3, sticky="ew", pady=(10, 8))
+        scene_box.columnconfigure(0, weight=1)
+        self.scene_combobox = ttk.Combobox(
+            scene_box, textvariable=self.scene_choice_var,
+            values=tuple(option.label for option in SCENE_OPTIONS),
+            state="readonly", width=46,
+        )
+        self.scene_combobox.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+
+        preview_border = tk.Frame(
+            scene_box, background=THEME["surface_raised"], width=482, height=272,
+            highlightthickness=0,
+        )
+        preview_border.grid(row=1, column=0, sticky="w")
+        preview_border.pack_propagate(False)
+        self.scene_preview_label = tk.Label(
+            preview_border, text="场景预览资源不可用",
+            background=THEME["background"], foreground=THEME["text_muted"],
+            font=("Microsoft YaHei UI", 10),
+        )
+        self.scene_preview_label.pack(fill="both", expand=True, padx=1, pady=1)
+        ttk.Label(scene_box, textvariable=self.scene_name_var,
+                  style="SceneName.TLabel").grid(
+            row=2, column=0, sticky="w", pady=(9, 0))
+        ttk.Label(scene_box, textvariable=self.scene_description_var,
+                  style="SceneMeta.TLabel").grid(
+            row=3, column=0, sticky="w", pady=(2, 0))
+
         ttk.Label(tab, text="物件速度").grid(row=6, column=0, sticky="w", pady=7)
         ttk.Combobox(tab, textvariable=self.speed_var, values=("1", "2", "3"),
                      state="readonly", width=8).grid(
@@ -434,9 +640,12 @@ class MuseChartApp:
         self.progress = ttk.Progressbar(panel, mode="indeterminate")
         self.progress.grid(row=2, column=0, sticky="ew", pady=(0, 10))
         self.log = scrolledtext.ScrolledText(
-            panel, wrap="word", font=("Consolas", 9), background="#171923",
-            foreground="#e5e7eb", insertbackground="white", relief="flat",
-            padx=10, pady=10, state="disabled")
+            panel, wrap="word", font=("Consolas", 9),
+            background="#10091D", foreground=THEME["text"],
+            insertbackground=THEME["cyan"],
+            selectbackground=THEME["violet"], relief="flat",
+            highlightthickness=0, padx=10, pady=10,
+            state="disabled")
         self.log.grid(row=3, column=0, sticky="nsew")
         buttons = ttk.Frame(panel, style="Panel.TFrame")
         buttons.grid(row=4, column=0, sticky="ew", pady=(12, 0))
@@ -446,9 +655,11 @@ class MuseChartApp:
             command=self._start_generation)
         self.generate_button.grid(row=0, column=0, sticky="ew")
         self.cancel_button = ttk.Button(
-            buttons, text="取消", command=self._cancel_generation, state="disabled")
+            buttons, text="取消", command=self._cancel_generation,
+            state="disabled")
         self.cancel_button.grid(row=0, column=1, padx=(8, 0))
-        ttk.Button(buttons, text="打开输出目录", command=self._open_output).grid(
+        ttk.Button(buttons, text="打开输出目录", command=self._open_output,
+                   style="Secondary.TButton").grid(
             row=0, column=2, padx=(8, 0))
         ttk.Button(buttons, text="清空日志", command=self._clear_log).grid(
             row=0, column=3, padx=(8, 0))
@@ -460,7 +671,49 @@ class MuseChartApp:
         self.output_name_var.trace_add("write", lambda *_: self._update_output_preview())
         self.output_dir_var.trace_add("write", lambda *_: self._update_output_preview())
         self.difficulty_var.trace_add("write", lambda *_: self._update_output_preview())
+        self.difficulty_var.trace_add("write", lambda *_: self._update_difficulty_icon())
+        self.scene_choice_var.trace_add("write", lambda *_: self._scene_changed())
         self.cover_var.trace_add("write", lambda *_: self._refresh_cover_labels())
+
+    def _update_difficulty_icon(self) -> None:
+        if not hasattr(self, "difficulty_icon_label"):
+            return
+        image = self.ui_images.get(f"difficulty_{self.difficulty_var.get()}")
+        self.difficulty_icon_label.configure(image=image or "")
+
+    def _scene_changed(self) -> None:
+        try:
+            scene_id = scene_id_from_choice(self.scene_choice_var.get())
+        except ValueError:
+            return
+        self.scene_var.set(scene_id)
+        self._update_scene_preview()
+
+    def _update_scene_preview(self) -> None:
+        if not hasattr(self, "scene_preview_label"):
+            return
+        option = SCENE_BY_ID.get(self.scene_var.get())
+        if option is None:
+            self.scene_preview_image = None
+            self.scene_preview_label.configure(
+                image="", text="请选择列表中的普通场景")
+            self.scene_name_var.set("")
+            self.scene_description_var.set("")
+            return
+        try:
+            source = tk.PhotoImage(master=self.root, file=str(option.background))
+            preview = source.subsample(4, 4)
+        except tk.TclError:
+            preview = None
+        self.scene_preview_image = preview
+        if preview is None:
+            self.scene_preview_label.configure(
+                image="", text=f"未找到预览：{option.background.name}")
+        else:
+            self.scene_preview_label.configure(image=preview, text="")
+        self.scene_name_var.set(option.title)
+        self.scene_description_var.set(
+            f"{option.scene_id}  ·  {option.description}")
 
     def _choose_audio(self) -> None:
         path = filedialog.askopenfilename(title="选择音乐", filetypes=AUDIO_TYPES)
@@ -630,8 +883,8 @@ class MuseChartApp:
             raise ValueError("显示等级不能为空")
         if not self.designer_var.get().strip():
             raise ValueError("谱师名不能为空")
-        if not self.scene_var.get().strip():
-            raise ValueError("场景不能为空")
+        scene = scene_id_from_choice(self.scene_choice_var.get())
+        self.scene_var.set(scene)
         return GenerationOptions(
             audio=audio, checkpoint=checkpoint, output=output,
             difficulty=difficulty, play_level=self.play_level_var.get().strip(),
@@ -639,7 +892,7 @@ class MuseChartApp:
             bpm_mode=bpm_mode, bpm=bpm,
             title=self.title_var.get().strip(), artist=self.artist_var.get().strip(),
             level_designer=self.designer_var.get().strip(),
-            scene=self.scene_var.get().strip(), speed=int(self.speed_var.get()),
+            scene=scene, speed=int(self.speed_var.get()),
             device=self.device_var.get(), cpu_threads=cpu_threads,
             event_ordering=self.event_ordering_var.get(),
             double_optimization=self.double_optimization_var.get(),
