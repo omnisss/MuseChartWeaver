@@ -1,4 +1,4 @@
-"""Shared onset suppression plus the v3.2 structured decoder."""
+"""Shared onset suppression plus the v1.0 structured decoder."""
 from __future__ import annotations
 
 from bisect import bisect_left, insort

@@ -1,4 +1,4 @@
-"""Compact whole-song acoustic context used by the v3.2 model."""
+"""Compact whole-song acoustic context used by MuseChartWeaver v1.0."""
 from __future__ import annotations
 
 import numpy as np

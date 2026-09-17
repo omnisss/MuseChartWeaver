@@ -1,4 +1,4 @@
-"""Chunked audio encoding followed by one whole-song v3.2 decode."""
+"""Chunked audio encoding followed by one whole-song v1.0 decode."""
 from __future__ import annotations
 
 import contextlib
@@ -17,7 +17,8 @@ STATIC_OUTPUTS = {"pair_embeddings", "boss_transition_logits"}
 
 @torch.inference_mode()
 def predict_outputs(*, model, audio, difficulty, bpm, config, overlap_seconds,
-                    device, progress=False, beat_offset=0.0, beat_known=False):
+                    device, progress=False, beat_offset=0.0, beat_known=False,
+                    progress_callback=None):
     data = config["data"]
     sample_rate = int(data["sample_rate"])
     hop = int(data["hop_length"])
@@ -80,6 +81,8 @@ def predict_outputs(*, model, audio, difficulty, bpm, config, overlap_seconds,
                 result[key] = torch.zeros(
                     (*value.shape[:-1], len(covered)), dtype=torch.float32)
             result[key][..., global_indices] = value[..., local]
+        if progress_callback is not None:
+            progress_callback(chunk_index + 1, len(starts))
     if not covered.all():
         raise RuntimeError("分块拼接存在未覆盖帧")
     return result
@@ -101,11 +104,13 @@ def decode_song(outputs, *, config, vocabulary, threshold, audio_duration,
 
 def predict_difficulty(*, model, audio, difficulty, bpm, vocabulary, config,
                        threshold, overlap_seconds, max_duration, device,
-                       progress=True, beat_offset=0.0, beat_known=False):
+                       progress=True, beat_offset=0.0, beat_known=False,
+                       progress_callback=None):
     outputs = predict_outputs(
         model=model, audio=audio, difficulty=difficulty, bpm=bpm, config=config,
         overlap_seconds=overlap_seconds, device=device, progress=progress,
-        beat_offset=beat_offset, beat_known=beat_known)
+        beat_offset=beat_offset, beat_known=beat_known,
+        progress_callback=progress_callback)
     return decode_song(
         outputs, config=config, vocabulary=vocabulary, threshold=threshold,
         audio_duration=len(audio) / config["data"]["sample_rate"],

@@ -575,7 +575,7 @@ def write_mdm(
     output: Path, *, bms_text: str, info: dict, generation: dict,
     audio: Path, difficulty: int, cover: Path | None = None,
     fallback_cover: Path | None = None,
-    include_cover: bool = True, cover_seed: str = "MuseChart AI",
+    include_cover: bool = True, cover_seed: str = "MuseChartWeave",
     make_demo: bool = True, demo_start: float = 0.0, demo_seconds: float = 15.0,
 ) -> dict:
     output = output.resolve()

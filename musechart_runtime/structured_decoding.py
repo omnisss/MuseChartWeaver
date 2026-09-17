@@ -1,4 +1,4 @@
-"""v3.2 learned structured decoder used by full-song inference."""
+"""v1.0 learned structured decoder used by full-song inference."""
 from __future__ import annotations
 
 import math
@@ -53,7 +53,7 @@ def decode_batch(outputs, *, threshold, frame_seconds, vocabulary,
     from .decoding import suppress_onsets
 
     if legacy:
-        raise ValueError("v3.2 Boss 由状态序列解码，不再支持独立 boss_threshold")
+        raise ValueError("v1.0 Boss 由状态序列解码，不再支持独立 boss_threshold")
     if (not 0 < threshold < 1 or minimum_gap < 0
             or max_duration <= 0 or frame_seconds <= 0):
         raise ValueError("无效的解码阈值、时间步长或时长范围")

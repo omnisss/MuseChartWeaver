@@ -7,10 +7,21 @@ from pathlib import Path
 from unittest import mock
 
 from gui import (
+    ALBUM_DISC_PATH,
+    ASSET_DIR,
+    DIFFICULTY_STAR_PATHS,
+    LEVEL_FONT_PATH,
+    LEVEL_STAR_PATH,
+    PRODUCT_VERSION,
     SCENE_OPTIONS,
+    UI_EVENT_PREFIX,
     GenerationOptions,
+    _compose_difficulty_star,
     build_generate_command,
+    compose_song_preview,
     compose_output_path,
+    parse_ui_event_line,
+    preferred_window_size,
     scene_id_from_choice,
 )
 from musechart_runtime.mdm import (
@@ -21,6 +32,75 @@ from musechart_runtime.mdm import (
 
 
 class GuiCommandTests(unittest.TestCase):
+    def test_ui_assets_are_self_contained_in_inference(self):
+        expected = Path(__file__).resolve().parent / "assets"
+        self.assertEqual(ASSET_DIR, expected)
+        for path in (
+            ALBUM_DISC_PATH,
+            LEVEL_FONT_PATH,
+            *DIFFICULTY_STAR_PATHS.values(),
+        ):
+            self.assertTrue(path.is_file(), path)
+            self.assertTrue(path.is_relative_to(expected), path)
+
+    def test_preview_difficulty_stars_share_geometry_and_anchor(self):
+        badges = [_compose_difficulty_star(difficulty, 82)
+                  for difficulty in (1, 2, 3)]
+        alpha_bounds = [badge.getchannel("A").getbbox()
+                        for badge, _ in badges]
+        centers = [center for _, center in badges]
+        self.assertEqual(alpha_bounds[1:], alpha_bounds[:-1])
+        self.assertEqual(centers[1:], centers[:-1])
+        self.assertEqual(centers[0], (41.0, 41.0))
+
+    def test_window_size_keeps_720p_controls_on_screen(self):
+        self.assertEqual(preferred_window_size(1280, 720), (1240, 650))
+        self.assertEqual(preferred_window_size(1366, 768), (1326, 698))
+        self.assertEqual(preferred_window_size(1920, 1080), (1440, 900))
+
+    def test_song_preview_uses_game_album_and_font_assets(self):
+        self.assertEqual(PRODUCT_VERSION, "1.0")
+        self.assertTrue(ALBUM_DISC_PATH.is_file())
+        self.assertTrue(LEVEL_FONT_PATH.is_file())
+        self.assertEqual(LEVEL_STAR_PATH.parent, ASSET_DIR / "chart")
+        self.assertTrue(all(path.is_file()
+                            for path in DIFFICULTY_STAR_PATHS.values()))
+        self.assertTrue(all(path.parent == ASSET_DIR / "chart"
+                            for path in DIFFICULTY_STAR_PATHS.values()))
+        preview = compose_song_preview(
+            background=SCENE_OPTIONS[2].background,
+            cover=None,
+            title="Link Up",
+            artist="MuseChartWeaver",
+            difficulty=3,
+            play_level="9",
+            size=(720, 430),
+        )
+        self.assertEqual(preview.size, (720, 430))
+        self.assertEqual(preview.mode, "RGBA")
+        compact = compose_song_preview(
+            background=SCENE_OPTIONS[0].background,
+            cover=None,
+            title="Compact",
+            artist="720p",
+            difficulty=1,
+            play_level="6",
+            size=(520, 180),
+        )
+        self.assertEqual(compact.size, (520, 180))
+
+    def test_structured_ui_progress_ignores_raw_console_output(self):
+        self.assertIsNone(parse_ui_event_line("[1/5] 加载模型"))
+        event = parse_ui_event_line(
+            UI_EVENT_PREFIX
+            + '{"kind":"progress","step":3,"percent":52.5,'
+              '"stage":"模型推理","message":"已分析 2/4 个音频分块"}'
+        )
+        self.assertIsNotNone(event)
+        self.assertEqual(event["step"], 3)
+        self.assertEqual(event["percent"], 52.5)
+        self.assertIsNone(parse_ui_event_line(UI_EVENT_PREFIX + "{broken"))
+
     def test_scene_choices_are_named_and_have_preview_images(self):
         scene_ids = {option.scene_id for option in SCENE_OPTIONS}
         self.assertEqual(
@@ -53,7 +133,7 @@ class GuiCommandTests(unittest.TestCase):
             audio=Path("song.mp3"), checkpoint=Path("best.pt"),
             output=Path("song_map2.mdm"), difficulty=2, play_level="7",
             profile="balanced", threshold=None, bpm_mode="auto", bpm=None,
-            title="", artist="", level_designer="MuseChart AI",
+            title="", artist="", level_designer="MuseChartWeave",
             scene="scene_01", speed=2, device="auto", cpu_threads=4,
             event_ordering=True, double_optimization=True,
             obvious_error_repair=True, optimization_matrix=False,
@@ -92,7 +172,8 @@ class GuiCommandTests(unittest.TestCase):
     def test_image_directory_has_a_deterministic_fallback(self):
         fallback = find_default_cover(Path(__file__).resolve().parent / "image")
         self.assertIsNotNone(fallback)
-        self.assertEqual(fallback.name, "爱咕TV.jpg")
+        self.assertEqual(fallback.stem, "爱咕TV")
+        self.assertIn(fallback.suffix.lower(), {".jpg", ".jpeg", ".png", ".webp"})
 
     @unittest.skipUnless(shutil.which("ffprobe"), "需要 ffprobe")
     def test_embedded_cover_probe_distinguishes_sample_audio(self):

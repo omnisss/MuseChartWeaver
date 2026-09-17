@@ -11,4 +11,13 @@ if not exist ".venv\Scripts\pythonw.exe" (
   )
 )
 
+".venv\Scripts\python.exe" -c "import PIL" >nul 2>nul
+if errorlevel 1 (
+  call setup_venv.bat
+  if errorlevel 1 (
+    pause
+    exit /b 1
+  )
+)
+
 start "MuseChart" ".venv\Scripts\pythonw.exe" -X utf8 gui.py

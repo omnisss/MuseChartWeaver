@@ -1,4 +1,4 @@
-"""Conservative, independently switchable v3.2 chart repairs."""
+"""Conservative, independently switchable v1.0 chart repairs."""
 from __future__ import annotations
 
 from collections import Counter, defaultdict
@@ -12,6 +12,7 @@ NORMAL_MONSTER_IDS = frozenset((
 ))
 BOSS_DOUBLE_ATTACK_IDS = frozenset(("13", "14", "15"))
 OBVIOUS_SINGLETON_TYPES = frozenset((2, 6, 7))  # gear, heart, music note
+PICKUP_TYPES = frozenset((6, 7))  # heart, music note
 
 
 def _copy_sorted(events: list[dict]) -> list[dict]:
@@ -66,7 +67,7 @@ def optimize_boss_sequence(
     events: list[dict], *, enabled: bool = True,
     minimum_control_gap: float = 0.30,
 ) -> tuple[list[dict], dict]:
-    """Conservatively filter impossible controls using the v3.2 state graph."""
+    """Conservatively filter impossible controls using the v1.0 state graph."""
     if minimum_control_gap < 0:
         raise ValueError("minimum_control_gap 必须大于等于 0")
     ordered = _copy_sorted(events)
@@ -337,13 +338,16 @@ def normalize_double_ids(events: list[dict], enabled: bool = True) -> tuple[list
 def repair_obvious_double_errors(
     events: list[dict], enabled: bool = True,
 ) -> tuple[list[dict], dict]:
-    """Repair duplicate objects, sustained-event conflicts and idle Boss visits."""
+    """Repair duplicate/pickup conflicts, sustained conflicts and idle Boss visits."""
     result = _copy_sorted(events)
     if not enabled:
         return result, {
             "enabled": False,
             "repaired_onsets": 0,
+            "pickup_double_conflicts": 0,
+            "pickup_double_objects_removed": 0,
             "duration_conflicts_repaired": 0,
+            "opposite_hold_pickups_removed": 0,
             "hold_mash_conflicts": 0,
             "mash_monster_conflicts": 0,
             "idle_boss_visits_removed": 0,
@@ -358,6 +362,8 @@ def repair_obvious_double_errors(
     removed_types: Counter[int] = Counter()
     removed_ibms: Counter[str] = Counter()
     repaired_onsets = 0
+    pickup_double_conflicts = 0
+    pickup_double_objects_removed = 0
 
     def _remove_event(event: dict) -> bool:
         identity = id(event)
@@ -373,7 +379,33 @@ def repair_obvious_double_errors(
                 or {int(event["lane"]) for event in group} != {0, 1}):
             continue
         semantic_types = {int(event.get("semantic_type", -1)) for event in group}
-        if len(semantic_types) != 1 or next(iter(semantic_types)) not in OBVIOUS_SINGLETON_TYPES:
+        pickups = [
+            event for event in group
+            if int(event.get("semantic_type", -1)) in PICKUP_TYPES
+        ]
+        if pickups:
+            non_pickups = [event for event in group if event not in pickups]
+            # A pickup must not act as one half of a double-track obstacle.
+            # If both lanes contain pickups, retain only the more confident one
+            # so the musical accent is preserved without forcing two inputs.
+            removed = pickups if non_pickups else [
+                event for event in pickups
+                if event is not max(pickups, key=_event_rank)
+            ]
+            removed_now = sum(int(_remove_event(event)) for event in removed)
+            if removed_now:
+                keep = non_pickups or [
+                    event for event in pickups if id(event) not in removed_ids
+                ]
+                for event in keep:
+                    event["is_double"] = False
+                    event["duplicate_repair"] = "removed_conflicting_pickup"
+                repaired_onsets += 1
+                pickup_double_conflicts += 1
+                pickup_double_objects_removed += removed_now
+            continue
+        if (len(semantic_types) != 1
+                or next(iter(semantic_types)) not in OBVIOUS_SINGLETON_TYPES):
             continue
         keep = max(group, key=_event_rank)
         removed_event = next(event for event in group if event is not keep)
@@ -393,6 +425,17 @@ def repair_obvious_double_errors(
         and int(event.get("semantic_type", -1)) == 3
         and float(event.get("duration", 0.0)) > 1.0e-6
     ]
+    opposite_hold_pickups_removed = 0
+    for pickup in result:
+        if (id(pickup) in removed_ids
+                or int(pickup.get("semantic_type", -1)) not in PICKUP_TYPES):
+            continue
+        pickup_time = float(pickup["time"])
+        pickup_lane = int(pickup.get("lane", -1))
+        if any(int(hold.get("lane", -1)) != pickup_lane
+               and strictly_inside(hold, pickup_time) for hold in holds):
+            opposite_hold_pickups_removed += int(_remove_event(pickup))
+
     mashes = [
         event for event in result
         if id(event) not in removed_ids
@@ -487,8 +530,13 @@ def repair_obvious_double_errors(
     return _copy_sorted(output), {
         "enabled": True,
         "repaired_onsets": repaired_onsets,
+        "pickup_double_conflicts": pickup_double_conflicts,
+        "pickup_double_objects_removed": pickup_double_objects_removed,
         "duration_conflicts_repaired": (
-            hold_mash_conflicts + mash_monster_conflicts),
+            opposite_hold_pickups_removed
+            + hold_mash_conflicts
+            + mash_monster_conflicts),
+        "opposite_hold_pickups_removed": opposite_hold_pickups_removed,
         "hold_mash_conflicts": hold_mash_conflicts,
         "mash_monster_conflicts": mash_monster_conflicts,
         "idle_boss_visits_removed": len(idle_visit_details),

@@ -104,6 +104,47 @@ class PostprocessTests(unittest.TestCase):
         self.assertEqual(report["removed_semantic_types"],
                          {"2": 1, "6": 1, "7": 1})
 
+    def test_obvious_repair_removes_pickups_from_mixed_doubles(self):
+        events = [
+            event(1.0, 0, 1, "01", ibms_confidence=0.2),
+            event(1.0, 1, 7, "23", ibms_confidence=0.9),
+            event(2.0, 0, 6, "22", ibms_confidence=0.8),
+            event(2.0, 1, 7, "23", ibms_confidence=0.6),
+            event(3.0, 0, 2, "0H", ibms_confidence=0.2),
+            event(3.0, 1, 6, "22", ibms_confidence=0.9),
+        ]
+        repaired, report = repair_obvious_double_errors(events)
+        by_time = {
+            item["time"]: (item["semantic_type"], item["ibms_id"])
+            for item in repaired
+        }
+        self.assertEqual(by_time, {
+            1.0: (1, "01"),
+            2.0: (6, "22"),
+            3.0: (2, "0H"),
+        })
+        self.assertTrue(all(not item["is_double"] for item in repaired))
+        self.assertEqual(report["pickup_double_conflicts"], 3)
+        self.assertEqual(report["pickup_double_objects_removed"], 3)
+
+    def test_obvious_repair_removes_pickups_inside_opposite_hold(self):
+        events = [
+            event(4.0, 1, 3, "0F", duration=2.0),
+            event(4.5, 0, 7, "23"),
+            event(5.0, 0, 6, "22"),
+            # Same-lane and exact end-boundary pickups are not this conflict.
+            event(5.5, 1, 7, "23"),
+            event(6.0, 0, 7, "23"),
+        ]
+        repaired, report = repair_obvious_double_errors(events)
+        retained = {(item["time"], item["lane"]) for item in repaired}
+        self.assertNotIn((4.5, 0), retained)
+        self.assertNotIn((5.0, 0), retained)
+        self.assertIn((5.5, 1), retained)
+        self.assertIn((6.0, 0), retained)
+        self.assertEqual(report["opposite_hold_pickups_removed"], 2)
+        self.assertEqual(report["duration_conflicts_repaired"], 2)
+
     def test_obvious_repair_removes_sustained_event_conflicts(self):
         events = [
             event(1.0, 1, 3, "0F", duration=2.0),

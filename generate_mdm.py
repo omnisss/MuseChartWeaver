@@ -26,7 +26,8 @@ from musechart_runtime.mdm import (build_bms_text, build_info_json,  # noqa: E40
 from musechart_runtime.model import MuseChartModel  # noqa: E402
 from musechart_runtime.pipeline import predict_difficulty  # noqa: E402
 from musechart_runtime.postprocessing import apply_optimizations  # noqa: E402
-from musechart_runtime.schema import SCHEMA_VERSION, TRAINER_VERSION, require_v3  # noqa: E402
+from musechart_runtime.schema import (MODEL_KIND, SCHEMA_VERSION,  # noqa: E402
+                                      TRAINER_VERSION, require_v1)
 from musechart_runtime.tempo import estimate_tempo  # noqa: E402
 from musechart_runtime.utils import write_json  # noqa: E402
 
@@ -46,6 +47,19 @@ OPTIMIZATION_VARIANTS = (
     ("opt_double_obvious", False, True, True),
     ("opt_all", True, True, True),
 )
+UI_EVENT_PREFIX = "@@MUSECHART_UI@@"
+UI_PROGRESS_ENABLED = os.environ.get("MUSECHART_UI_PROGRESS") == "1"
+
+
+def emit_ui_event(kind: str, **payload) -> None:
+    """Emit one machine-readable line for the desktop UI."""
+    if not UI_PROGRESS_ENABLED:
+        return
+    print(
+        UI_EVENT_PREFIX + json.dumps(
+            {"kind": kind, **payload}, ensure_ascii=False, separators=(",", ":")),
+        flush=True,
+    )
 
 
 def default_checkpoint() -> Path:
@@ -61,7 +75,7 @@ def default_checkpoint() -> Path:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="本机一键生成：MP3/WAV/FLAC/OGG/... -> 模型推理 -> 可玩性后处理 -> CustomAlbums MDM")
+        description="一键生成：MP3/WAV/FLAC/OGG/... -> 模型推理 -> 可玩性后处理 -> CustomAlbums MDM")
     parser.add_argument("audio", nargs="?", type=Path, default=SCRIPT_DIR / "no title.mp3",
                         help="输入音乐；省略时使用 inference/no title.mp3")
     parser.add_argument("--checkpoint", type=Path, default=default_checkpoint(),
@@ -75,7 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="以 checkpoint 校准阈值为中心：casual +0.10，balanced 不变，aggressive -0.10")
     parser.add_argument("--threshold", type=float, help="覆盖 profile 的 onset 阈值")
     parser.add_argument("--boss-threshold", type=float, default=0.85,
-                        help="兼容旧命令；v3.2 使用状态序列解码，此参数不再参与推理")
+                        help="兼容旧命令；v1.0 使用状态序列解码，此参数不再参与推理")
     parser.add_argument("--bpm", type=float,
                         help="省略则自动检测；正数为手动覆盖；0 明确禁用检测和模型 BPM 条件")
     parser.add_argument("--bpm-min", type=float, default=70.0, help="自动检测搜索下限，默认 70")
@@ -85,7 +99,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--title", help="默认读取音频 title 标签，否则使用文件名")
     parser.add_argument("--romanized-title")
     parser.add_argument("--artist", help="默认读取音频 artist 标签")
-    parser.add_argument("--level-designer", default="MuseChart AI")
+    parser.add_argument("--level-designer", default="MuseChartWeaver")
     parser.add_argument("--scene", default="scene_01")
     parser.add_argument("--speed", type=int, choices=(1, 2, 3), default=2)
     parser.add_argument("--double-optimization", action=argparse.BooleanOptionalAction,
@@ -102,7 +116,7 @@ def build_parser() -> argparse.ArgumentParser:
     obvious = parser.add_mutually_exclusive_group()
     obvious.add_argument("--obvious-error-repair", "--special-double-repair",
                          dest="obvious_error_repair", action="store_true",
-                         help="明显错误项：修复重复物件、持续事件冲突和 Boss 空转")
+                         help="明显错误项：修复重复物件、音符/红心冲突、持续事件冲突和 Boss 空转")
     obvious.add_argument("--no-obvious-error-repair", "--no-special-double-repair",
                          dest="obvious_error_repair", action="store_false",
                          help="关闭重复物件、持续事件冲突和 Boss 空转修复")
@@ -248,12 +262,20 @@ def main() -> int:
     if args.cover is not None and args.no_cover:
         raise ValueError("--cover 与 --no-cover 不能同时使用")
 
+    emit_ui_event(
+        "progress", step=1, percent=3, stage="准备模型",
+        message="正在检查输入文件与运行设备",
+    )
     device = choose_device(args.device)
     if device.type == "cpu":
         torch.set_num_threads(args.cpu_threads)
     print(f"[1/5] 加载模型: {checkpoint_path.name} -> {device}")
+    emit_ui_event(
+        "progress", step=1, percent=7, stage="加载模型",
+        message=f"{checkpoint_path.name} · {device}",
+    )
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-    require_v3(checkpoint, "checkpoint")
+    require_v1(checkpoint, "checkpoint")
     config, vocabulary = checkpoint["config"], checkpoint["vocabulary"]
     if args.difficulty > int(config["model"]["max_difficulty"]):
         raise ValueError("difficulty 超出 checkpoint 支持范围")
@@ -265,9 +287,17 @@ def main() -> int:
         raise ValueError("推理阈值必须位于 (0,1)")
     overlap = (args.overlap_seconds if args.overlap_seconds is not None
                else float(config["inference"]["overlap_seconds"]))
+    emit_ui_event(
+        "progress", step=1, percent=15, stage="模型就绪",
+        message=f"难度 map{args.difficulty} · {args.profile}",
+    )
 
     sample_rate = int(config["data"]["sample_rate"])
     print(f"[2/5] 解码音频: {audio_path.name} -> mono {sample_rate} Hz")
+    emit_ui_event(
+        "progress", step=2, percent=18, stage="解析音乐",
+        message=f"正在读取 {audio_path.name}",
+    )
     audio = load_audio_flexible(audio_path, sample_rate, output.parent)
     duration_seconds = len(audio) / sample_rate
     if duration_seconds <= 0:
@@ -299,19 +329,37 @@ def main() -> int:
         else:
             print(f"      未检测到可靠 BPM：模型使用 unknown BPM；BMS 仅用 {args.coordinate_bpm:g} 作为时间坐标")
     bms_bpm = resolved_bpm if resolved_bpm > 0 else args.coordinate_bpm
+    bpm_label = f"{resolved_bpm:g} BPM" if resolved_bpm > 0 else "未知 BPM"
+    emit_ui_event(
+        "progress", step=2, percent=26, stage="音乐已就绪",
+        message=f"{duration_seconds:.1f} 秒 · {bpm_label}",
+    )
 
-    print(f"[3/5] v3.2 整曲状态解码: difficulty={args.difficulty}, "
+    print(f"[3/5] v1.0 整曲状态解码: difficulty={args.difficulty}, "
           f"profile={args.profile}, threshold={threshold:g}")
+    emit_ui_event(
+        "progress", step=3, percent=29, stage="模型推理",
+        message="正在分析整首音乐的节奏与物件",
+    )
     model = MuseChartModel(sample_rate=sample_rate,
                            hop_length=int(config["data"]["hop_length"]),
                            config=config["model"]).to(device)
     model.load_state_dict(checkpoint["model"])
+    def inference_progress(completed: int, total: int) -> None:
+        ratio = completed / max(1, total)
+        emit_ui_event(
+            "progress", step=3, percent=round(29 + ratio * 52, 1),
+            stage="模型推理",
+            message=f"已分析 {completed}/{total} 个音频分块",
+        )
+
     events = predict_difficulty(
         model=model, audio=audio, difficulty=args.difficulty, bpm=resolved_bpm,
         vocabulary=vocabulary, config=config, threshold=threshold,
         overlap_seconds=overlap, max_duration=float(config["train"]["max_duration_seconds"]),
-        device=device, progress=True, beat_offset=beat_offset,
-        beat_known=resolved_bpm > 0)
+        device=device, progress=not UI_PROGRESS_ENABLED, beat_offset=beat_offset,
+        beat_known=resolved_bpm > 0,
+        progress_callback=inference_progress if UI_PROGRESS_ENABLED else None)
     del model
     if device.type == "cuda":
         torch.cuda.empty_cache()
@@ -326,6 +374,10 @@ def main() -> int:
         event_ordering=args.event_ordering,
         double_optimization=args.double_optimization,
         obvious_error_repair=args.obvious_error_repair)
+    emit_ui_event(
+        "progress", step=4, percent=84, stage="整理谱面",
+        message=f"正在整理 {len(raw_events)} 个模型事件",
+    )
 
     info = build_info_json(
         title=title, romanized_title=args.romanized_title or title, artist=artist,
@@ -336,6 +388,7 @@ def main() -> int:
     summaries = []
     for (variant_output, variant_name, ordering_enabled, double_enabled,
          obvious_enabled) in variants:
+        variant_index = len(summaries)
         optimized_events, postprocess_report = apply_optimizations(
             raw_events, event_ordering=ordering_enabled,
             double_optimization=double_enabled,
@@ -360,7 +413,7 @@ def main() -> int:
         generation = {
             "schema_version": SCHEMA_VERSION,
             "format": "MDMods/CustomAlbums MDM-BMS",
-            "pipeline": "audio_to_mdm_v3_2",
+            "pipeline": "audio_to_mdm_v1_0",
             "variant": variant_name,
             "source_audio": audio_path.name,
             "audio_duration_seconds": duration_seconds,
@@ -369,7 +422,7 @@ def main() -> int:
             "checkpoint_epoch": checkpoint.get("epoch"),
             "checkpoint_global_step": checkpoint.get("global_step"),
             "checkpoint_selection_dimension": checkpoint.get("selection_dimension"),
-            "model_kind": checkpoint.get("model_kind"),
+            "model_kind": MODEL_KIND,
             "device": str(device),
             "torch_version": torch.__version__,
             "difficulty": args.difficulty,
@@ -398,8 +451,8 @@ def main() -> int:
         event_document = {
             "schema_version": SCHEMA_VERSION,
             "trainer_version": TRAINER_VERSION,
-            "source": "MuseChart IBMS v3.2 local audio-to-MDM pipeline",
-            "model_kind": checkpoint.get("model_kind"),
+            "source": "MuseChartWeaver v1.0 local audio-to-MDM pipeline",
+            "model_kind": MODEL_KIND,
             "checkpoint": str(checkpoint_path),
             "checkpoint_sha256": checkpoint_hash,
             "checkpoint_epoch": checkpoint.get("epoch"),
@@ -437,6 +490,12 @@ def main() -> int:
 
         print(f"[5/5] 打包 {variant_output.name}: ordering={ordering_enabled}, "
               f"double={double_enabled}, obvious={obvious_enabled}")
+        emit_ui_event(
+            "progress", step=5,
+            percent=round(90 + 8 * variant_index / max(1, len(variants)), 1),
+            stage="打包 MDM",
+            message=f"正在写入 {variant_output.name}",
+        )
         cover_report = write_mdm(
             variant_output, bms_text=bms_text, info=info, generation=generation,
             audio=audio_path, difficulty=args.difficulty, cover=args.cover,
@@ -465,23 +524,35 @@ def main() -> int:
                 "double_optimization"]["boss_double_onsets"],
             "obvious_duplicate_onsets": postprocess_report[
                 "obvious_error_repair"]["repaired_onsets"],
+            "pickup_double_conflicts": postprocess_report[
+                "obvious_error_repair"]["pickup_double_conflicts"],
             "obvious_duration_conflicts": postprocess_report[
                 "obvious_error_repair"]["duration_conflicts_repaired"],
+            "opposite_hold_pickups_removed": postprocess_report[
+                "obvious_error_repair"]["opposite_hold_pickups_removed"],
             "idle_boss_visits_removed": postprocess_report[
                 "obvious_error_repair"]["idle_boss_visits_removed"],
             "boss_controls": len(boss_events),
             "cover": cover_report,
         })
 
-    print(json.dumps({
+    final_summary = {
         "status": "ok",
         "device": str(device),
         "duration_seconds": duration_seconds,
+        "bpm": resolved_bpm,
+        "bpm_source": bpm_source,
         "threshold": threshold,
         "boss_decoder": "learned_state_viterbi",
         "elapsed_seconds": time.perf_counter() - started,
         "outputs": summaries,
-    }, ensure_ascii=False, indent=2))
+    }
+    emit_ui_event(
+        "result", step=5, percent=100, stage="生成完成",
+        message=f"已生成 {len(summaries)} 个 MDM 文件",
+        **final_summary,
+    )
+    print(json.dumps(final_summary, ensure_ascii=False, indent=2))
     return 0
 
 
